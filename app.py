@@ -84,29 +84,42 @@ def handle_csv_uploads(uploaded_files, m_naar_boezem, m_naar_polder):
 
 st.title("Levensduur bepaling")
 
+st.markdown(
+    """
+    Bepaal de achtergrondzetting o.b.v. AHN gegevens over een gewenste breedte van de dijk en gebruik deze achtergrondzetting
+    om een indruk te krijgen van de levensduur van de dijk wat de hoogte betreft.
+    """
+)
 
 # Create a form to upload files
 with st.form("upload_form"):
-    st.write("Please select one or more CSV files to upload:")
+    st.info("Kies de breedte om de achtergrondzetting over de dijk te berekenen.")
 
     st.warning(
         "Zet de invoer op 0 m naar boezem en 0 m naar de polder om de zetting op de referentielijn te krijgen."
     )
     col1, col2 = st.columns(2)
     with col1:
-        m_naar_boezem = st.number_input("m naar boezem", value=2.0, step=0.5)
+        m_naar_boezem = st.number_input(
+            "m naar boezem t.o.v. referentielijn", value=1.0, step=0.5
+        )
     with col2:
-        m_naar_polder = st.number_input("m naar polder", value=3.0, step=0.5)
+        m_naar_polder = st.number_input(
+            "m naar polder t.o.v. referentielijn", value=2.0, step=0.5
+        )
 
+    st.info(
+        "Kies de start en eind metrering en de afkeurhoogte om het gewenste dijkdeel te bekijken."
+    )
     col3, col4, col5 = st.columns(3)
     with col3:
-        start_metrering = st.number_input("start metrering", value=1600)
+        start_metrering = st.number_input("start metrering", value=0)
     with col4:
-        end_metrering = st.number_input("eind metrering", value=2321)
+        end_metrering = st.number_input("eind metrering", value=9999)
     with col5:
-        afkeur_hoogte = st.number_input("afkeurhoogte", value=-1.38)
+        afkeur_hoogte = st.number_input("afkeurhoogte", value=0.1)
 
-    # Use file_uploader with accept_multiple_files=True
+    st.info("Kies de csv bestanden met AHN data.")
     uploaded_files = st.file_uploader(
         "Choose CSV files", type="csv", accept_multiple_files=True
     )
@@ -130,16 +143,26 @@ if "combined_df" in st.session_state:
     combined_df = st.session_state["combined_df"]
 
     st.subheader("Gecombineerde AHN data")
+    st.info(
+        "Het onderstaande dataframe is als csv te downloaden voor eigen verwerking, gebruik hiervoor de Download als CSV optie in het menu dat naar voren komt als je over de data scrollt."
+    )
     st.dataframe(combined_df, use_container_width=True)
 
     st.subheader("Zettingen (z54, z43, z53) per meetpunt (c)")
+    st.info(
+        "Gebruik de onderstaande grafiek om de achtergrondzetting te kiezen die je voor de levensduur analyse wilt gebruiken."
+    )
     st.warning(
-        "Negatieve zetting (zwel) is uit de dataset verwijderd, zetting > 30mm per jaar is op 30mm gezet."
+        "Negatieve zetting (zwel) wordt op 1mm zetting per jaar gezet, zetting > 30mm per jaar wordt op het maximum van 30mm gezet."
     )
 
     st.line_chart(combined_df, x="c", y=["z54", "z43", "z53"])
 
     with st.form("levensduur_form"):
+        st.info(
+            "Kies hier de te gebruiken achtergrondzetting en het interval voor de metrering waarover de levensduur berekend moet worden (de levensduur wordt in stukjes dijklengte bepaald om te voorkomen dat er teveel lokale verschillen komen)."
+        )
+
         col1, col2 = st.columns(2)
 
         with col1:
@@ -187,8 +210,12 @@ if "combined_df" in st.session_state:
         # Update the dataframe in session state
         st.session_state["combined_df"] = combined_df
 
+        st.info(
+            "Je kunt dit dataframe downloaden in csv formaat voor eventuele eigen berekeningen. Gebruik de Download als CSV knop in het menu dat verschijnt als je over de data scrollt"
+        )
         st.dataframe(combined_df, use_container_width=True)
 
+        st.info("De onderstaande grafieken vatten de belangrijkste resultaten samen.")
         # Create chart for Zetting
         fig_zetting = go.Figure()
         fig_zetting.add_trace(
@@ -311,6 +338,9 @@ if "combined_df" in st.session_state:
         # Convert to PNG for download
         png_bytes = fig_combined.to_image(format="png", width=1200, height=800)
 
+        st.info(
+            "Optioneel kun je met de onderstaande knop de grafieken als 1 plaatje downloaden."
+        )
         st.download_button(
             label="Download Rapportage Grafieken (PNG)",
             data=png_bytes,
