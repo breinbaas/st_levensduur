@@ -6,6 +6,13 @@ Deze app is bedoeld om de levensduur van een dijk te bepalen o.b.v. de minimaal 
 * Mei 2026
 * Rob van Putten | breinbaas@pm.me | rob.van.putten@agv.nl
 
+## Update 
+
+Bij de nieuwe versie van de app zijn de volgende aanpassingen gedaan;
+
+* het is nu mogelijk om de hoogte van de dijk te bepalen over een opgegeven breedte, hierbij wordt binnen de opgegeven breedte gezocht naar de 4 aaneengesloten hoogste punten waarvan het laagste punt gebruikt wordt als kruinhoogte (in tegenstelling tot het gebruik van enkel 1 punt op de referentielijn)
+* download optie verwijderd, makkelijker om individueel te downloaden
+
 ## Bekende bugs / restricties
 * De download optie voor de grafieken werkt enkel op Chrome browsers
 
