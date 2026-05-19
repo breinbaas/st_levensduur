@@ -20,7 +20,7 @@ def handle_csv_uploads(uploaded_files, m_naar_boezem, m_naar_polder):
         try:
             # Read the CSV file
             df = pd.read_csv(file)
-            df = df[(df["l"] >= -1 * m_naar_boezem) & (df["l"] <= m_naar_polder)]
+            # df = df[(df["l"] >= -1 * m_naar_boezem) & (df["l"] <= m_naar_polder)]
             df = df.reset_index(drop=True)
 
             # Determine the new column name for z based on the filename
@@ -40,7 +40,12 @@ def handle_csv_uploads(uploaded_files, m_naar_boezem, m_naar_polder):
         except Exception as e:
             st.error(f"Error processing {file.name}: {e}")
 
+    combined_df_breedte = combined_df.copy()
+
     # bereken achtergrondzetting
+    combined_df = combined_df[
+        (combined_df["l"] >= -1 * m_naar_boezem) & (combined_df["l"] <= m_naar_polder)
+    ]
     combined_df = combined_df[
         (combined_df["c"] >= start_metrering) & (combined_df["c"] <= end_metrering)
     ]
@@ -78,8 +83,11 @@ def handle_csv_uploads(uploaded_files, m_naar_boezem, m_naar_polder):
 
     # Remove columns z4, z3, l
     combined_df = combined_df.drop(columns=["z4", "z3", "l"], errors="ignore")
+    combined_df_breedte = combined_df_breedte.drop(
+        columns=["z4", "z3"], errors="ignore"
+    )
 
-    return combined_df
+    return combined_df, combined_df_breedte
 
 
 st.title("Levensduur bepaling")
@@ -132,15 +140,19 @@ with st.form("upload_form"):
 if submitted:
     if uploaded_files:
         st.success(f"Successfully uploaded {len(uploaded_files)} file(s)!")
-        combined_df = handle_csv_uploads(uploaded_files, m_naar_boezem, m_naar_polder)
-        if combined_df is not None:
+        combined_df, combined_df_breedte = handle_csv_uploads(
+            uploaded_files, m_naar_boezem, m_naar_polder
+        )
+        if combined_df is not None and combined_df_breedte is not None:
             st.session_state["combined_df"] = combined_df
+            st.session_state["combined_df_breedte"] = combined_df_breedte
     else:
         st.warning("Please select at least one CSV file before clicking Upload.")
 
 # Display data if it exists in session state
-if "combined_df" in st.session_state:
+if "combined_df" and "combined_df_breedte" in st.session_state:
     combined_df = st.session_state["combined_df"]
+    combined_df_breedte = st.session_state["combined_df_breedte"]
 
     st.subheader("Gecombineerde AHN data")
     st.info(
@@ -172,14 +184,21 @@ if "combined_df" in st.session_state:
                 index=2,
                 horizontal=True,
             )
+            m_naar_boezem_hoogte = st.number_input(
+                "m naar boezem t.o.v. referentielijn", value=4.0, step=0.5
+            )
         with col2:
             c_interval = st.number_input(
                 "Interval voor berekening levensduur (m):",
                 min_value=10,
                 max_value=250,
-                value=50,
+                value=10,
                 step=5,
             )
+            m_naar_polder_hoogte = st.number_input(
+                "m naar polder t.o.v. referentielijn", value=4.0, step=0.5
+            )
+
         bereken_submitted = st.form_submit_button("Bereken levensduur")
 
     if bereken_submitted:
@@ -187,25 +206,103 @@ if "combined_df" in st.session_state:
         import plotly.graph_objects as go
         from plotly.subplots import make_subplots
 
+        results_z5_breedte = []
+        for c_val, group in combined_df_breedte.groupby("c"):
+            # Filter on l within boundaries
+            mask = (group["l"] >= -m_naar_boezem_hoogte) & (
+                group["l"] <= m_naar_polder_hoogte
+            )
+            filtered = group[mask].sort_values("l").reset_index(drop=True)
+
+            z5_breedte_val = np.nan
+            if len(filtered) >= 4:
+                # Find the highest 4 consecutive points by their sum
+                rolling_sum = filtered["z5"].rolling(window=4).sum()
+
+                # dropna removes windows that contain NaN values
+                valid_sums = rolling_sum.dropna()
+
+                if not valid_sums.empty:
+                    # Get index of the max sum
+                    max_idx = valid_sums.idxmax()
+                    # The 4 consecutive points end at max_idx
+                    highest_4 = filtered.loc[max_idx - 3 : max_idx, "z5"]
+                    # Take the lowest value of z5 from those highest points
+                    z5_breedte_val = highest_4.min()
+
+            results_z5_breedte.append({"c": c_val, "z5_breedte": z5_breedte_val})
+
+        df_z5_breedte = pd.DataFrame(results_z5_breedte)
+
+        # Combine with combined_df
+        combined_df
+        if "z5_breedte" in combined_df.columns:
+            combined_df = combined_df.drop(columns=["z5_breedte"])
+        combined_df = pd.merge(combined_df, df_z5_breedte, on="c", how="left")
+
         current_year = datetime.now().year
-        combined_df[f"z_{current_year}"] = (
+
+        # calculate z_huidig_jaar voor de breedte
+        setting_map = combined_df.set_index("c")[gekozen_zetting]
+
+        combined_df_breedte = combined_df_breedte[
+            (combined_df_breedte["c"] >= start_metrering)
+            & (combined_df_breedte["c"] <= end_metrering)
+        ]
+
+        combined_df_breedte[f"z_{current_year}"] = combined_df_breedte["z5"] - (
+            current_year - AHN5
+        ) * combined_df_breedte["c"].map(setting_map)
+
+        st.header(
+            "Debug data - ter controle van de hoogte bepaling over de breedte van de  dijk."
+        )
+        st.dataframe(combined_df_breedte)
+
+        ref_label = f"z_{current_year}_ref"
+        ref_label_breedte = f"z_{current_year}_breedte"
+
+        combined_df[ref_label] = (
             combined_df["z5"] - (current_year - AHN5) * combined_df[gekozen_zetting]
         )
-        combined_df["z_rest"] = combined_df[f"z_{current_year}"] - afkeur_hoogte
+        combined_df["z_rest_ref"] = combined_df[ref_label] - afkeur_hoogte
+        combined_df[ref_label_breedte] = (
+            combined_df["z5_breedte"]
+            - (current_year - AHN5) * combined_df[gekozen_zetting]
+        )
+        combined_df["z_rest_breedte"] = combined_df[ref_label_breedte] - afkeur_hoogte
 
         # Calculate levensduur safely
-        combined_df["levensduur"] = np.where(
+        combined_df["levensduur_ref"] = np.where(
             combined_df[gekozen_zetting] > 0,
-            combined_df["z_rest"] / combined_df[gekozen_zetting],
+            combined_df["z_rest_ref"] / combined_df[gekozen_zetting],
             np.nan,
         )
-        combined_df.loc[combined_df["levensduur"] < 0, "levensduur"] = 0.0
-        combined_df.loc[combined_df["levensduur"] > 30, "levensduur"] = 30.0
+        combined_df.loc[combined_df["levensduur_ref"] < 0, "levensduur_ref"] = 0.0
+        combined_df.loc[combined_df["levensduur_ref"] > 30, "levensduur_ref"] = 30.0
+
+        combined_df["levensduur_breedte"] = np.where(
+            combined_df[gekozen_zetting] > 0,
+            combined_df["z_rest_breedte"] / combined_df[gekozen_zetting],
+            np.nan,
+        )
+        combined_df.loc[combined_df["levensduur_breedte"] < 0, "levensduur_breedte"] = (
+            0.0
+        )
+        combined_df.loc[
+            combined_df["levensduur_breedte"] > 30, "levensduur_breedte"
+        ] = 30.0
 
         # Calculate levensduur per interval of c (lowest value, in multiples of 5)
-        combined_df["c_bin"] = (combined_df["c"] // c_interval) * c_interval
-        bin_min = combined_df.groupby("c_bin")["levensduur"].transform("min")
-        combined_df["levensduur_5y"] = (bin_min // 5) * 5
+        combined_df["c_bin_ref"] = (combined_df["c"] // c_interval) * c_interval
+        bin_min = combined_df.groupby("c_bin_ref")["levensduur_ref"].transform("min")
+        combined_df["levensduur_5y_ref"] = (bin_min // 5) * 5
+
+        combined_df["c_bin_breedte"] = (combined_df["c"] // c_interval) * c_interval
+        bin_min = combined_df.groupby("c_bin_breedte")["levensduur_breedte"].transform(
+            "min"
+        )
+        combined_df["levensduur_5y_breedte"] = (bin_min // 5) * 5
 
         # Update the dataframe in session state
         st.session_state["combined_df"] = combined_df
@@ -221,10 +318,19 @@ if "combined_df" in st.session_state:
         fig_zetting.add_trace(
             go.Scatter(
                 x=combined_df["c"],
-                y=combined_df[f"z_{current_year}"],
-                name=f"Zetting {current_year}",
+                y=combined_df[ref_label],
+                name=f"Hoogte {current_year} (ref)",
                 mode="lines",
                 line=dict(color="blue"),
+            )
+        )
+        fig_zetting.add_trace(
+            go.Scatter(
+                x=combined_df["c"],
+                y=combined_df[ref_label_breedte],
+                name=f"Hoogte {current_year} (breedte)",
+                mode="lines",
+                line=dict(color="green", dash="dot"),
             )
         )
         # Add dotted line for afkeur_hoogte
@@ -262,10 +368,19 @@ if "combined_df" in st.session_state:
         fig_levensduur.add_trace(
             go.Scatter(
                 x=combined_df["c"],
-                y=combined_df["levensduur_5y"],
-                name=f"Levensduur (min per {c_interval}m)",
+                y=combined_df["levensduur_5y_ref"],
+                name=f"Levensduur (min per {c_interval}m) (ref)",
                 mode="lines",
                 line=dict(color="red", shape="hv"),
+            )
+        )
+        fig_levensduur.add_trace(
+            go.Scatter(
+                x=combined_df["c"],
+                y=combined_df["levensduur_5y_breedte"],
+                name=f"Levensduur (min per {c_interval}m) (breedte)",
+                mode="lines",
+                line=dict(color="green", shape="hv", dash="dot"),
             )
         )
         fig_levensduur.update_layout(title="Berekende Levensduur")
@@ -273,77 +388,77 @@ if "combined_df" in st.session_state:
 
         st.plotly_chart(fig_levensduur, use_container_width=True)
 
-        # Combine the three plots for download
-        fig_combined = make_subplots(
-            rows=3,
-            cols=1,
-            shared_xaxes=True,
-            subplot_titles=(
-                f"Hoogte in {current_year}",
-                f"Gebruikte Zettingssnelheid ({gekozen_zetting})",
-                "Berekende Levensduur",
-            ),
-            vertical_spacing=0.1,
-        )
+        # # Combine the three plots for download
+        # fig_combined = make_subplots(
+        #     rows=3,
+        #     cols=1,
+        #     shared_xaxes=True,
+        #     subplot_titles=(
+        #         f"Hoogte in {current_year}",
+        #         f"Gebruikte Zettingssnelheid ({gekozen_zetting})",
+        #         "Berekende Levensduur",
+        #     ),
+        #     vertical_spacing=0.1,
+        # )
 
-        # 1. Zetting
-        fig_combined.add_trace(
-            go.Scatter(
-                x=combined_df["c"],
-                y=combined_df[f"z_{current_year}"],
-                name=f"Hoogte {current_year}",
-                line=dict(color="blue"),
-            ),
-            row=1,
-            col=1,
-        )
-        fig_combined.add_hline(
-            y=afkeur_hoogte, line_dash="dot", line_color="orange", row=1, col=1
-        )
+        # # 1. Zetting
+        # fig_combined.add_trace(
+        #     go.Scatter(
+        #         x=combined_df["c"],
+        #         y=combined_df[ref_label],
+        #         name=f"Hoogte {current_year}",
+        #         line=dict(color="blue"),
+        #     ),
+        #     row=1,
+        #     col=1,
+        # )
+        # fig_combined.add_hline(
+        #     y=afkeur_hoogte, line_dash="dot", line_color="orange", row=1, col=1
+        # )
 
-        # 2. Snelheid
-        fig_combined.add_trace(
-            go.Scatter(
-                x=combined_df["c"],
-                y=combined_df[gekozen_zetting],
-                name=f"Achtergrondzetting ({gekozen_zetting})",
-                line=dict(color="green"),
-            ),
-            row=2,
-            col=1,
-        )
+        # # 2. Snelheid
+        # fig_combined.add_trace(
+        #     go.Scatter(
+        #         x=combined_df["c"],
+        #         y=combined_df[gekozen_zetting],
+        #         name=f"Achtergrondzetting ({gekozen_zetting})",
+        #         line=dict(color="green"),
+        #     ),
+        #     row=2,
+        #     col=1,
+        # )
 
-        # 3. Levensduur
-        fig_combined.add_trace(
-            go.Scatter(
-                x=combined_df["c"],
-                y=combined_df["levensduur_5y"],
-                name=f"Levensduur (min per {c_interval}m)",
-                line=dict(color="red", shape="hv"),
-            ),
-            row=3,
-            col=1,
-        )
+        # # 3. Levensduur
+        # fig_combined.add_trace(
+        #     go.Scatter(
+        #         x=combined_df["c"],
+        #         y=combined_df["levensduur_5y_ref"],
+        #         name=f"Levensduur (min per {c_interval}m)",
+        #         line=dict(color="red", shape="hv"),
+        #     ),
+        #     row=3,
+        #     col=1,
+        # )
 
-        fig_combined.update_yaxes(title_text="Hoogte (m)", row=1, col=1)
-        fig_combined.update_yaxes(title_text="Snelheid (m/jr)", row=2, col=1)
-        fig_combined.update_yaxes(
-            title_text="Levensduur (jr)", range=[0, 35], row=3, col=1
-        )
+        # fig_combined.update_yaxes(title_text="Hoogte (m)", row=1, col=1)
+        # fig_combined.update_yaxes(title_text="Snelheid (m/jr)", row=2, col=1)
+        # fig_combined.update_yaxes(
+        #     title_text="Levensduur (jr)", range=[0, 35], row=3, col=1
+        # )
 
-        fig_combined.update_layout(
-            height=800, title_text="Rapportage Levensduurberekening"
-        )
+        # fig_combined.update_layout(
+        #     height=800, title_text="Rapportage Levensduurberekening"
+        # )
 
-        # Convert to PNG for download
-        png_bytes = fig_combined.to_image(format="png", width=1200, height=800)
+        # # Convert to PNG for download
+        # png_bytes = fig_combined.to_image(format="png", width=1200, height=800)
 
-        st.info(
-            "Optioneel kun je met de onderstaande knop de grafieken als 1 plaatje downloaden."
-        )
-        st.download_button(
-            label="Download Rapportage Grafieken (PNG)",
-            data=png_bytes,
-            file_name="levensduur_rapportage.png",
-            mime="image/png",
-        )
+        # st.info(
+        #     "Optioneel kun je met de onderstaande knop de grafieken als 1 plaatje downloaden."
+        # )
+        # st.download_button(
+        #     label="Download Rapportage Grafieken (PNG)",
+        #     data=png_bytes,
+        #     file_name="levensduur_rapportage.png",
+        #     mime="image/png",
+        # )
