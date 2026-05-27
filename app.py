@@ -1,6 +1,7 @@
 from datetime import datetime
 import streamlit as st
 import pandas as pd
+import altair as alt
 
 
 AHN3 = 2015
@@ -63,12 +64,22 @@ def handle_csv_uploads(uploaded_files, m_naar_boezem, m_naar_polder):
     if (
         "c" in combined_df.columns
         and "l" in combined_df.columns
+        and "z3" in combined_df.columns
+        and "z4" in combined_df.columns
         and "z5" in combined_df.columns
     ):
+        z3_l0 = combined_df[combined_df["l"] == 0][["c", "z3"]].rename(
+            columns={"z3": "z3_l0"}
+        )
+        z4_l0 = combined_df[combined_df["l"] == 0][["c", "z4"]].rename(
+            columns={"z4": "z4_l0"}
+        )
         z5_l0 = combined_df[combined_df["l"] == 0][["c", "z5"]].rename(
             columns={"z5": "z5_l0"}
         )
     else:
+        z3_l0 = None
+        z4_l0 = None
         z5_l0 = None
 
     # Aggregate all rows based on 'c' to get the average
@@ -76,16 +87,21 @@ def handle_csv_uploads(uploaded_files, m_naar_boezem, m_naar_polder):
         combined_df = combined_df.groupby("c").mean(numeric_only=True).reset_index()
 
         # Override averaged z5 with the values at l == 0
+        if z3_l0 is not None:
+            combined_df = pd.merge(combined_df, z3_l0, on="c", how="left")
+            combined_df["z3"] = combined_df["z3_l0"]
+            combined_df = combined_df.drop(columns=["z3_l0"])
+        if z4_l0 is not None:
+            combined_df = pd.merge(combined_df, z4_l0, on="c", how="left")
+            combined_df["z4"] = combined_df["z4_l0"]
+            combined_df = combined_df.drop(columns=["z4_l0"])
         if z5_l0 is not None:
             combined_df = pd.merge(combined_df, z5_l0, on="c", how="left")
             combined_df["z5"] = combined_df["z5_l0"]
             combined_df = combined_df.drop(columns=["z5_l0"])
 
-    # Remove columns z4, z3, l
-    combined_df = combined_df.drop(columns=["z4", "z3", "l"], errors="ignore")
-    combined_df_breedte = combined_df_breedte.drop(
-        columns=["z4", "z3"], errors="ignore"
-    )
+    # Remove column l
+    combined_df = combined_df.drop(columns=["l"], errors="ignore")
 
     return combined_df, combined_df_breedte
 
@@ -160,6 +176,35 @@ if "combined_df" and "combined_df_breedte" in st.session_state:
     )
     st.dataframe(combined_df, use_container_width=True)
 
+    z_cols = [col for col in ["z3", "z4", "z5"] if col in combined_df.columns]
+    if z_cols:
+        st.subheader("Hoogtes (z3, z4, z5) per meetpunt (c)")
+        df_hoogte_melted = combined_df.melt(
+            id_vars=["c"],
+            value_vars=z_cols,
+            var_name="Hoogte",
+            value_name="Waarde",
+        )
+        selection_hoogte = alt.selection_point(fields=["Hoogte"], bind="legend")
+        chart_hoogte = (
+            alt.Chart(df_hoogte_melted)
+            .mark_line()
+            .encode(
+                x=alt.X("c:Q", title="c"),
+                y=alt.Y("Waarde:Q", title="Hoogte (m)", scale=alt.Scale(zero=False)),
+                color=alt.Color(
+                    "Hoogte:N",
+                    scale=alt.Scale(
+                        domain=["z3", "z4", "z5"],
+                        range=["#1f77b4", "#ff7f0e", "black"],
+                    ),
+                ),
+                opacity=alt.condition(selection_hoogte, alt.value(1), alt.value(0.2)),
+            )
+            .add_params(selection_hoogte)
+        )
+        st.altair_chart(chart_hoogte, use_container_width=True)
+
     st.subheader("Zettingen (z54, z43, z53) per meetpunt (c)")
     st.info(
         "Gebruik de onderstaande grafiek om de achtergrondzetting te kiezen die je voor de levensduur analyse wilt gebruiken."
@@ -168,7 +213,31 @@ if "combined_df" and "combined_df_breedte" in st.session_state:
         "Negatieve zetting (zwel) wordt op 1mm zetting per jaar gezet, zetting > 30mm per jaar wordt op het maximum van 30mm gezet."
     )
 
-    st.line_chart(combined_df, x="c", y=["z54", "z43", "z53"])
+    df_melted = combined_df.melt(
+        id_vars=["c"],
+        value_vars=["z54", "z43", "z53"],
+        var_name="Zetting",
+        value_name="Waarde",
+    )
+    selection = alt.selection_point(fields=["Zetting"], bind="legend")
+    chart = (
+        alt.Chart(df_melted)
+        .mark_line()
+        .encode(
+            x=alt.X("c:Q", title="c"),
+            y=alt.Y("Waarde:Q", title="Zetting (m/jaar)"),
+            color=alt.Color(
+                "Zetting:N",
+                scale=alt.Scale(
+                    domain=["z54", "z43", "z53"],
+                    range=["#1f77b4", "#ff7f0e", "black"],
+                ),
+            ),
+            opacity=alt.condition(selection, alt.value(1), alt.value(0.2)),
+        )
+        .add_params(selection)
+    )
+    st.altair_chart(chart, use_container_width=True)
 
     with st.form("levensduur_form"):
         st.info(
@@ -187,6 +256,7 @@ if "combined_df" and "combined_df_breedte" in st.session_state:
             m_naar_boezem_hoogte = st.number_input(
                 "m naar boezem t.o.v. referentielijn", value=4.0, step=0.5
             )
+            zettings_factor = st.number_input("Zettingsfactor:", value=1.4, step=0.1)
         with col2:
             c_interval = st.number_input(
                 "Interval voor berekening levensduur (m):",
@@ -198,13 +268,21 @@ if "combined_df" and "combined_df_breedte" in st.session_state:
             m_naar_polder_hoogte = st.number_input(
                 "m naar polder t.o.v. referentielijn", value=4.0, step=0.5
             )
+            planperiodes = [
+                int(s)
+                for s in st.multiselect(
+                    "Planperiodes:",
+                    options=["5", "10", "15", "20", "25", "30"],
+                    default=["5", "10", "15", "20", "25", "30"],
+                )
+            ]
 
         bereken_submitted = st.form_submit_button("Bereken levensduur")
 
     if bereken_submitted:
+        st.header(planperiodes)
+
         import numpy as np
-        import plotly.graph_objects as go
-        from plotly.subplots import make_subplots
 
         results_z5_breedte = []
         for c_val, group in combined_df_breedte.groupby("c"):
@@ -272,6 +350,33 @@ if "combined_df" and "combined_df_breedte" in st.session_state:
         )
         combined_df["z_rest_breedte"] = combined_df[ref_label_breedte] - afkeur_hoogte
 
+        for periode in planperiodes:
+            # benodigde ophoging over de referentielijn
+            title = f"oph_{periode}_ref"
+            combined_df[title] = np.where(
+                combined_df[gekozen_zetting] > 0,
+                (
+                    (afkeur_hoogte + periode * combined_df[gekozen_zetting])
+                    - combined_df["z_2026_ref"]
+                )
+                * zettings_factor,
+                np.nan,
+            )
+            combined_df.loc[combined_df[title] < 0, title] = 0
+
+            # benodigde ophoging over de breedte van de dijk
+            title = f"oph_{periode}_breedte"
+            combined_df[title] = np.where(
+                combined_df[gekozen_zetting] > 0,
+                (
+                    (afkeur_hoogte + periode * combined_df[gekozen_zetting])
+                    - combined_df["z_2026_breedte"]
+                )
+                * zettings_factor,
+                np.nan,
+            )
+            combined_df.loc[combined_df[title] < 0, title] = 0
+
         # Calculate levensduur safely
         combined_df["levensduur_ref"] = np.where(
             combined_df[gekozen_zetting] > 0,
@@ -313,152 +418,200 @@ if "combined_df" and "combined_df_breedte" in st.session_state:
         st.dataframe(combined_df, use_container_width=True)
 
         st.info("De onderstaande grafieken vatten de belangrijkste resultaten samen.")
-        # Create chart for Zetting
-        fig_zetting = go.Figure()
-        fig_zetting.add_trace(
-            go.Scatter(
-                x=combined_df["c"],
-                y=combined_df[ref_label],
-                name=f"Hoogte {current_year} (ref)",
-                mode="lines",
-                line=dict(color="blue"),
-            )
-        )
-        fig_zetting.add_trace(
-            go.Scatter(
-                x=combined_df["c"],
-                y=combined_df[ref_label_breedte],
-                name=f"Hoogte {current_year} (breedte)",
-                mode="lines",
-                line=dict(color="green", dash="dot"),
-            )
-        )
-        # Add dotted line for afkeur_hoogte
-        fig_zetting.add_hline(
-            y=afkeur_hoogte,
-            line_dash="dot",
-            line_color="orange",
-            annotation_text="Afkeurhoogte",
-        )
-        fig_zetting.update_layout(title=f"Hoogte in {current_year}")
-        fig_zetting.update_yaxes(title_text="Huidige hoogte (m)")
 
-        st.plotly_chart(fig_zetting, use_container_width=True)
+        # Create chart for Zetting
+        df_zetting_melt = combined_df.melt(
+            id_vars=["c"],
+            value_vars=[ref_label, ref_label_breedte],
+            var_name="Type",
+            value_name="Hoogte",
+        )
+        name_ref_zetting = f"Hoogte {current_year} (ref)"
+        name_breedte_zetting = f"Hoogte {current_year} (breedte)"
+        df_zetting_melt["Type"] = df_zetting_melt["Type"].replace(
+            {ref_label: name_ref_zetting, ref_label_breedte: name_breedte_zetting}
+        )
+
+        selection_zetting = alt.selection_point(fields=["Type"], bind="legend")
+
+        lines_zetting = (
+            alt.Chart(df_zetting_melt)
+            .mark_line()
+            .encode(
+                x=alt.X("c:Q", title="c"),
+                y=alt.Y("Hoogte:Q", title="Huidige hoogte (m)"),
+                color=alt.Color(
+                    "Type:N",
+                    title="Legenda",
+                    scale=alt.Scale(
+                        domain=[name_ref_zetting, name_breedte_zetting],
+                        range=["blue", "green"],
+                    ),
+                ),
+                strokeDash=alt.StrokeDash(
+                    "Type:N",
+                    title="Legenda",
+                    scale=alt.Scale(
+                        domain=[name_ref_zetting, name_breedte_zetting],
+                        range=[[1, 0], [5, 5]],
+                    ),
+                ),
+                opacity=alt.condition(selection_zetting, alt.value(1), alt.value(0.2)),
+            )
+            .add_params(selection_zetting)
+            .properties(title=f"Hoogte in {current_year}")
+        )
+
+        hline = (
+            alt.Chart(pd.DataFrame({"y": [afkeur_hoogte]}))
+            .mark_rule(strokeDash=[5, 5], color="orange")
+            .encode(y="y:Q")
+        )
+
+        st.altair_chart(lines_zetting + hline, use_container_width=True)
 
         # Create chart for Zettingssnelheid
-        fig_snelheid = go.Figure()
-        fig_snelheid.add_trace(
-            go.Scatter(
-                x=combined_df["c"],
-                y=combined_df[gekozen_zetting],
-                name=f"Snelheid ({gekozen_zetting})",
-                mode="lines",
-                line=dict(color="green"),
-            )
-        )
-        fig_snelheid.update_layout(
-            title=f"Gebruikte Zettingssnelheid ({gekozen_zetting})"
-        )
-        fig_snelheid.update_yaxes(title_text="Snelheid (m/jaar)")
+        df_snelheid = combined_df[["c", gekozen_zetting]].copy()
+        name_snelheid = f"Snelheid ({gekozen_zetting})"
+        df_snelheid["Type"] = name_snelheid
 
-        st.plotly_chart(fig_snelheid, use_container_width=True)
+        selection_snelheid = alt.selection_point(fields=["Type"], bind="legend")
+
+        chart_snelheid = (
+            alt.Chart(df_snelheid)
+            .mark_line()
+            .encode(
+                x=alt.X("c:Q", title="c"),
+                y=alt.Y(f"{gekozen_zetting}:Q", title="Snelheid (m/jaar)"),
+                color=alt.Color(
+                    "Type:N", title="Legenda", scale=alt.Scale(range=["green"])
+                ),
+                opacity=alt.condition(selection_snelheid, alt.value(1), alt.value(0.2)),
+            )
+            .add_params(selection_snelheid)
+            .properties(title=f"Gebruikte Zettingssnelheid ({gekozen_zetting})")
+        )
+
+        st.altair_chart(chart_snelheid, use_container_width=True)
 
         # Create chart for Levensduur
-        fig_levensduur = go.Figure()
-        fig_levensduur.add_trace(
-            go.Scatter(
-                x=combined_df["c"],
-                y=combined_df["levensduur_5y_ref"],
-                name=f"Levensduur (min per {c_interval}m) (ref)",
-                mode="lines",
-                line=dict(color="red", shape="hv"),
-            )
+        df_levensduur_melt = combined_df.melt(
+            id_vars=["c"],
+            value_vars=["levensduur_5y_ref", "levensduur_5y_breedte"],
+            var_name="Type",
+            value_name="Levensduur",
         )
-        fig_levensduur.add_trace(
-            go.Scatter(
-                x=combined_df["c"],
-                y=combined_df["levensduur_5y_breedte"],
-                name=f"Levensduur (min per {c_interval}m) (breedte)",
-                mode="lines",
-                line=dict(color="green", shape="hv", dash="dot"),
-            )
+
+        name_ref_levensduur = f"Levensduur (ref)"
+        name_breedte_levensduur = f"Levensduur (breedte)"
+
+        df_levensduur_melt["Type"] = df_levensduur_melt["Type"].replace(
+            {
+                "levensduur_5y_ref": name_ref_levensduur,
+                "levensduur_5y_breedte": name_breedte_levensduur,
+            }
         )
-        fig_levensduur.update_layout(title="Berekende Levensduur")
-        fig_levensduur.update_yaxes(title_text="Levensduur (jaren)", range=[0, 35])
 
-        st.plotly_chart(fig_levensduur, use_container_width=True)
+        selection_levensduur = alt.selection_point(fields=["Type"], bind="legend")
 
-        # # Combine the three plots for download
-        # fig_combined = make_subplots(
-        #     rows=3,
-        #     cols=1,
-        #     shared_xaxes=True,
-        #     subplot_titles=(
-        #         f"Hoogte in {current_year}",
-        #         f"Gebruikte Zettingssnelheid ({gekozen_zetting})",
-        #         "Berekende Levensduur",
-        #     ),
-        #     vertical_spacing=0.1,
-        # )
+        chart_levensduur = (
+            alt.Chart(df_levensduur_melt)
+            .mark_line(interpolate="step-after")
+            .encode(
+                x=alt.X("c:Q", title="c"),
+                y=alt.Y(
+                    "Levensduur:Q",
+                    title="Levensduur (jaren)",
+                    scale=alt.Scale(domain=[0, 35]),
+                ),
+                color=alt.Color(
+                    "Type:N",
+                    title="Legenda",
+                    scale=alt.Scale(
+                        domain=[name_ref_levensduur, name_breedte_levensduur],
+                        range=["red", "green"],
+                    ),
+                ),
+                strokeDash=alt.StrokeDash(
+                    "Type:N",
+                    title="Legenda",
+                    scale=alt.Scale(
+                        domain=[name_ref_levensduur, name_breedte_levensduur],
+                        range=[[1, 0], [5, 5]],
+                    ),
+                ),
+                opacity=alt.condition(
+                    selection_levensduur, alt.value(1), alt.value(0.2)
+                ),
+            )
+            .add_params(selection_levensduur)
+            .properties(title="Berekende Levensduur")
+        )
 
-        # # 1. Zetting
-        # fig_combined.add_trace(
-        #     go.Scatter(
-        #         x=combined_df["c"],
-        #         y=combined_df[ref_label],
-        #         name=f"Hoogte {current_year}",
-        #         line=dict(color="blue"),
-        #     ),
-        #     row=1,
-        #     col=1,
-        # )
-        # fig_combined.add_hline(
-        #     y=afkeur_hoogte, line_dash="dot", line_color="orange", row=1, col=1
-        # )
+        st.altair_chart(chart_levensduur, use_container_width=True)
 
-        # # 2. Snelheid
-        # fig_combined.add_trace(
-        #     go.Scatter(
-        #         x=combined_df["c"],
-        #         y=combined_df[gekozen_zetting],
-        #         name=f"Achtergrondzetting ({gekozen_zetting})",
-        #         line=dict(color="green"),
-        #     ),
-        #     row=2,
-        #     col=1,
-        # )
+        st.info(
+            "Hieronder zijn indicatieve grafieken van de benodigde ophoging per planperiode ."
+        )
+        for periode in planperiodes:
+            title_ref = f"oph_{periode}_ref"
+            title_breedte = f"oph_{periode}_breedte"
 
-        # # 3. Levensduur
-        # fig_combined.add_trace(
-        #     go.Scatter(
-        #         x=combined_df["c"],
-        #         y=combined_df["levensduur_5y_ref"],
-        #         name=f"Levensduur (min per {c_interval}m)",
-        #         line=dict(color="red", shape="hv"),
-        #     ),
-        #     row=3,
-        #     col=1,
-        # )
+            # Binning logic for ophoging (max value per interval, rounded up to multiples of 0.1)
+            combined_df["c_bin"] = (combined_df["c"] // c_interval) * c_interval
 
-        # fig_combined.update_yaxes(title_text="Hoogte (m)", row=1, col=1)
-        # fig_combined.update_yaxes(title_text="Snelheid (m/jr)", row=2, col=1)
-        # fig_combined.update_yaxes(
-        #     title_text="Levensduur (jr)", range=[0, 35], row=3, col=1
-        # )
+            bin_max_ref = combined_df.groupby("c_bin")[title_ref].transform("max")
+            title_ref_binned = f"oph_{periode}_ref_binned"
+            combined_df[title_ref_binned] = np.ceil(bin_max_ref * 10) / 10
 
-        # fig_combined.update_layout(
-        #     height=800, title_text="Rapportage Levensduurberekening"
-        # )
+            bin_max_breedte = combined_df.groupby("c_bin")[title_breedte].transform(
+                "max"
+            )
+            title_breedte_binned = f"oph_{periode}_breedte_binned"
+            combined_df[title_breedte_binned] = np.ceil(bin_max_breedte * 10) / 10
 
-        # # Convert to PNG for download
-        # png_bytes = fig_combined.to_image(format="png", width=1200, height=800)
+            df_ophoging_melt = combined_df.melt(
+                id_vars=["c"],
+                value_vars=[title_ref_binned, title_breedte_binned],
+                var_name="Type",
+                value_name="Ophoging",
+            )
+            name_ref_oph = f"Ophoging (ref)"
+            name_breedte_oph = f"Ophoging (breedte)"
+            df_ophoging_melt["Type"] = df_ophoging_melt["Type"].replace(
+                {title_ref_binned: name_ref_oph, title_breedte_binned: name_breedte_oph}
+            )
 
-        # st.info(
-        #     "Optioneel kun je met de onderstaande knop de grafieken als 1 plaatje downloaden."
-        # )
-        # st.download_button(
-        #     label="Download Rapportage Grafieken (PNG)",
-        #     data=png_bytes,
-        #     file_name="levensduur_rapportage.png",
-        #     mime="image/png",
-        # )
+            selection_oph = alt.selection_point(fields=["Type"], bind="legend")
+
+            chart_oph = (
+                alt.Chart(df_ophoging_melt)
+                .mark_line(interpolate="step-after")
+                .encode(
+                    x=alt.X("c:Q", title="c"),
+                    y=alt.Y("Ophoging:Q", title="Benodigde ophoging (m)"),
+                    color=alt.Color(
+                        "Type:N",
+                        title="Legenda",
+                        scale=alt.Scale(
+                            domain=[name_ref_oph, name_breedte_oph],
+                            range=["blue", "green"],
+                        ),
+                    ),
+                    strokeDash=alt.StrokeDash(
+                        "Type:N",
+                        title="Legenda",
+                        scale=alt.Scale(
+                            domain=[name_ref_oph, name_breedte_oph],
+                            range=[[1, 0], [5, 5]],
+                        ),
+                    ),
+                    opacity=alt.condition(selection_oph, alt.value(1), alt.value(0.2)),
+                )
+                .add_params(selection_oph)
+                .properties(
+                    title=f"Benodigde ophoging voor planperiode van {periode} jaar"
+                )
+            )
+
+            st.altair_chart(chart_oph, use_container_width=True)
